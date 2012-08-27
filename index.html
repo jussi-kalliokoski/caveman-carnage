@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+	<link rel="stylesheet" href="style.css" />
+	<script src="js/extend.js"></script>
+	<script src="js/event-emitter.js"></script>
+	<script src="js/frame-timer.js"></script>
+	<script src="js/box2d.js"></script>
+	<script src="js/html5Preloader.js"></script>
+	<script src="text-overlay.js"></script>
+	<script src="sounds.js"></script>
+	<script src="level.js"></script>
+	<script src="shapes.js"></script>
+	<script src="dude.js"></script>
+</head>
+<body>
+	<canvas id="c" width="800" height="600"></canvas>
+	<script>
+var vectorizer = {
+	create: function (imagedata, callback) {
+		var worker = this.worker
+
+		if (worker.onmessage) throw Error("The worker is busy!")
+
+		worker.onmessage = function (e) {
+			worker.onmessage = null
+
+			callback(e.data)
+		}
+
+		worker.postMessage(imagedata)
+	},
+
+	worker: new Worker('vectorize.js')
+}
+
+var b2Vec2 = Box2D.Common.Math.b2Vec2
+var b2BodyDef = Box2D.Dynamics.b2BodyDef
+var b2Body = Box2D.Dynamics.b2Body
+var b2FixtureDef = Box2D.Dynamics.b2FixtureDef
+var b2Fixture = Box2D.Dynamics.b2Fixture
+var b2World = Box2D.Dynamics.b2World
+var b2MassData = Box2D.Collision.Shapes.b2MassData
+var b2PolygonShape = Box2D.Collision.Shapes.b2PolygonShape
+var b2CircleShape = Box2D.Collision.Shapes.b2CircleShape
+var b2DebugDraw = Box2D.Dynamics.b2DebugDraw
+var b2RevoluteJointDef = Box2D.Dynamics.Joints.b2RevoluteJointDef
+var b2MouseJointDef =  Box2D.Dynamics.Joints.b2MouseJointDef
+
+var c = document.getElementById('c')
+var ctx = c.getContext('2d')
+
+var overlay = new TextOverlay()
+
+var bodyDef = new b2BodyDef()
+var fixDef = new b2FixtureDef()
+var gravityVec = new b2Vec2(0, 100)
+
+fixDef.density = 1.0
+fixDef.friction = 0.3
+fixDef.restitution = 0.3
+
+var world
+var level
+var shapes
+var mouseJoint
+var mouseBody
+var mouseX
+var mouseY
+var isMouseDown
+
+sounds.on('ready', function () {
+	console.log('sounds loaded')
+})
+
+function endLevel (victory) {
+	console.log(victory ? 'Victory!' : 'Loss :(')
+
+	sounds.play(victory ? 'victory' : 'gameover')
+
+	var msg = victory ? 'The alpha male survived!\nHumanity is saved...\nFor now.' :
+		'The alpha male has died!\nHumanity has lost its hope...'
+
+	var levelToLoad = victory ? level.level + 1 : level.level
+
+	overlay.show(msg, null, function () {
+		attempts = 0
+		loadLevel(levelToLoad)
+	})
+}
+
+function setupWorld () {
+
+	var world = new b2World(gravityVec, true)
+
+	var debugDraw = new b2DebugDraw()
+	debugDraw.SetSprite(ctx)
+	debugDraw.SetDrawScale(1)
+	debugDraw.SetFillAlpha(0.3)
+	debugDraw.SetLineThickness(1.0)
+	debugDraw.SetFlags(b2DebugDraw.e_shapeBit | b2DebugDraw.e_jointBit)
+	world.SetDebugDraw(debugDraw)
+
+	level.create(world, bodyDef, fixDef)
+
+	var listener = new Box2D.Dynamics.b2ContactListener
+
+	listener.BeginContact = function (contact) {}
+	listener.EndContact = function (contact) {}
+	listener.PreSolve = function (contact, oldManifold) {}
+
+	listener.PostSolve = function (contact, impulse) {
+		var a = contact.GetFixtureA().GetBody()
+		var b = contact.GetFixtureB().GetBody()
+
+		var aObj = a.GetUserData()
+		var bObj = b.GetUserData()
+
+		if (aObj && bObj && aObj.owner && aObj.owner === bObj.owner) return
+
+		var impulseX = impulse.tangentImpulses[0]
+		var impulseY = impulse.tangentImpulses[1]
+
+		var impulseAmount = Math.sqrt(impulseX * impulseX +
+			impulseY * impulseY) / 1000
+
+		if (impulseAmount < 1) return
+
+		if (aObj && aObj.owner) {
+			aObj.owner.emit('receivedamage', [impulseAmount])
+		}
+
+		if (bObj && bObj.owner) {
+			bObj.owner.emit('receivedamage', [impulseAmount])
+		}
+	}
+
+	world.SetContactListener(listener);
+
+	shapes.push(new Box({
+		x: c.width / 2,
+		y: c.height - 5,
+		w: c.width,
+		h: 10
+	}).create(world, bodyDef, fixDef), new Box({
+		x: 5,
+		y: c.height / 2,
+		w: 10,
+		h: c.height
+	}).create(world, bodyDef, fixDef), new Box({
+		x: c.width - 5,
+		y: c.height / 2,
+		w: 10,
+		h: c.height
+	}).create(world, bodyDef, fixDef))
+
+	bodyDef.type = b2Body.b2_kinematicBody
+
+	var dudesLeft = 4 + level.level
+
+	for (var i=0; i<dudesLeft + 1; i++) {
+		var dude = new Dude({
+			isAlpha: !i,
+			x: c.width * Math.random(),
+			y: c.height * Math.random()
+		})
+
+		var iterations = 0
+
+		while (level.collides(dude.x - 25, dude.y - 45, 50, 90)) {
+			dude = new Dude({
+				isAlpha: !i,
+				x: c.width * Math.random(),
+				y: c.height * Math.random()
+			})
+
+			if (iterations++ < 50) continue
+
+			console.log('The map sucks, let\'s try a new one.')
+			loadLevel(level.level)
+			return 
+		}
+
+		level.addCollisionArea(dude.x - 25, dude.y - 45, 50, 90)
+
+		dude.on('die', function () {
+			sounds.play('dudedie')
+		})
+
+		shapes.push(dude.create(world, bodyDef, fixDef))
+
+		if (i) dude.on('die', function () {
+			if (--dudesLeft || alphaMale.health <= 0.0) return
+
+			endLevel(true)
+		})
+	}
+
+	var alphaMale = shapes[shapes.length - i]
+
+	alphaMale.on('die', function () {
+		if (!dudesLeft) return
+
+		endLevel(false)
+	})
+
+/* FIXME: Ewwwwwww
+For some utterly otherwordly reason this keeps Box2D from freezing :S
+*/
+	if (attempts === 1) {
+		console.error('just in case...')
+
+		loadLevel(level.level)
+
+		return
+	}
+
+	console.log("And we're live!")
+
+	return world
+}
+
+function updateWorld () {
+	if (!world) return
+
+	if (isMouseDown && !mouseBody) {
+		bodyDef.type = b2Body.b2_dynamicBody
+
+		mouseBody = new Ball({
+			x: mouseX,
+			y: mouseY,
+			r: 20
+		}).create(world, bodyDef, fixDef)
+
+		shapes.push(mouseBody)
+
+		var md = new b2MouseJointDef()
+		md.bodyA = shapes[1].body
+		md.bodyB = mouseBody.body
+		md.target.Set(mouseX, mouseY)
+		md.collideConnected = true
+		md.maxForce = 30000.0 * mouseBody.body.GetMass()
+		mouseJoint = world.CreateJoint(md)
+		mouseBody.body.SetAwake(true)
+	}
+
+	if (mouseBody) {
+		if (isMouseDown) {
+			mouseJoint.SetTarget(new b2Vec2(mouseX, mouseY))
+		} else {
+			world.DestroyJoint(mouseJoint)
+			mouseBody = mouseJoint = null
+		}
+	}
+
+	world.Step(delta, 10, 10)
+
+	var obj = world.GetBodyList()
+	var pos, shape
+
+	while (obj) {
+		shape = obj.GetUserData()
+
+		if (shape) {
+			pos = obj.GetPosition()
+
+			shape.x = pos.x
+			shape.y = pos.y
+			shape.a = obj.GetAngle()
+		}
+
+		obj = obj.GetNext()
+	}
+
+	ctx.fillStyle = 'cyan'
+
+	shapes.forEach(function (shape) {
+		shape.draw(ctx, c)
+	})
+
+//	world.DrawDebugData()
+
+	world.ClearForces()
+}
+
+var levelLoaded
+var attempts = 0
+
+function loadLevel (lvl) {
+	attempts += 1
+	console.log('Loading level...')
+
+	levelLoaded = false
+
+	world = mouseJoint = mouseBody = null
+	level = new GameLevel({
+		level: ~~lvl
+	})
+
+	shapes = [level]
+
+	level.generatePaths(function () {
+		if (levelLoaded) return console.error('dafuq just happened?')
+
+		levelLoaded = true
+		console.log('Setting up world...')
+
+		world = setupWorld()
+	})
+}
+
+var prevTime = +new Date()
+var delta
+
+function draw () {
+	var newTime = +new Date()
+	delta = (newTime - prevTime) / 1000
+	prevTime = newTime
+
+	ctx.fillStyle = 'black'
+
+	if (world) ctx.clearRect(0, 0, c.width, c.height)
+	else ctx.fillRect(0, 0, c.width, c.height)
+
+	updateWorld()
+	overlay.draw(ctx, c, delta)
+}
+
+var timer = new FrameTimer(draw)
+
+var intro = [
+	"The mankind has succumbed to a time\n" +
+	"where one's genetic qualities no longer\n" +
+	"are the primary factor in selecting a mate...",
+
+	"This has lead to overabundance in bad\n" +
+	"genetic qualities, with only a few\n" +
+	"extraordinary samples of the mankind\n" +
+	"left, called the Alpha Males.",
+
+	"The men and women live in separated\n" +
+	"colonies, and the women come to visit\n" +
+	"the men only to reproduce.",
+
+	"Your job is to give the evolution\n" +
+	"a big hand, by helping in the\n" +
+	"survival of the fittest.",
+
+	"This, of course, is best done by\n" +
+	"wiping out the rest.\n" +
+	"Use your mouse to throw some rocks."
+]
+
+intro.next = function () {
+	overlay.show(intro.shift(), function () {
+		if (intro.length) intro.next()
+	}, function () {
+		if (intro.length) return
+
+		loadLevel(0)
+	})
+}
+
+intro.skip = function () {
+	intro.splice(0, intro.length)
+	c.removeEventListener('click', intro.skip, true)
+}
+
+c.addEventListener('click', intro.skip, true)
+
+intro.next()
+
+function handleMouseMove (e) {
+	mouseX = e.pageX - c.offsetLeft
+	mouseY = e.pageY - c.offsetTop
+}
+
+c.addEventListener('mousedown', function (e) {
+	if (!world) return
+
+	isMouseDown = true
+	handleMouseMove(e)
+
+	document.documentElement.addEventListener('mousemove',
+		handleMouseMove, true)
+}, true)
+
+document.documentElement.addEventListener('mouseup', function (e) {
+	document.documentElement.removeEventListener('mousemove',
+		handleMouseMove, false)
+
+	isMouseDown = false
+	mouseX = mouseY = null
+}, true)
+	</script>
+</body>
+</html>

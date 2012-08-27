@@ -1,0 +1,27 @@
+html {
+	width: 100%;
+	height: 100%;
+	box-shadow: 0 0 15px #888 inset;
+	overflow: hidden;
+	color: white;
+	background-color: black;
+	font-family: sans-serif;
+}
+
+body {
+	display: block;
+	margin: 0;
+	width: 100%;
+	height: 100%;
+}
+
+#c, p {
+	display: block;
+	width: 800px;
+	margin: 20px auto;
+}
+
+#c {
+	box-shadow: 0 0 15px #888;
+	background-color: white;
+}
